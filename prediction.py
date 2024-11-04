@@ -15,8 +15,12 @@ from pysolar.radiation import get_radiation_direct
 from pysolar.solar import get_altitude
 import pytz
 import scipy
+import netCDF4
 from typing import Dict
 import xarray
+
+# print(np.version.version)
+# exit()
 
 client = cdsapi.Client()
 
@@ -178,47 +182,57 @@ def addTimezone(dt, tz = pytz.UTC) -> datetime.datetime:
 # Getting the single and pressure level values.
 def getSingleAndPressureValues():
     
-    '''client.retrieve(
-        'reanalysis-era5-single-levels',
-        {
-            'product_type': 'reanalysis',
-            'variable': singlelevelfields,
-            'grid': '1.0/1.0',
-            'year': [2024],
-            'month': [1],
-            'day': [1],
-            'time': ['00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00'],
-            'format': 'netcdf'
-        },
-        'single-level.nc'
-    )'''
-    singlelevel = xarray.open_dataset('single-level.nc', engine = scipy.__name__).to_dataframe()
+    # client.retrieve(
+    #     'reanalysis-era5-single-levels',
+    #     {
+    #         'product_type': ['reanalysis'],
+    #         'variable': singlelevelfields,
+    #         'year': ['2024'],
+    #         'month': ['1'],
+    #         'day': ['1'],
+    #         'time': ['00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00'],
+    #         'data_format': 'netcdf',
+    #         'download_format': 'unarchived'
+    #     },
+    #     'single-level.nc'
+    # )
+    singlelevel = xarray.open_dataset('single-level.nc',).to_dataframe()
+    print(singlelevel.columns.values.tolist())
+    singlelevel = singlelevel.drop(columns=['number','expver'])
     singlelevel = singlelevel.rename(columns = {col:singlelevelfields[ind] for ind, col in enumerate(singlelevel.columns.values.tolist())})
     singlelevel = singlelevel.rename(columns = {'geopotential': 'geopotential_at_surface'})
-
+    singlelevel.index = singlelevel.index.rename(['time', 'latitude', 'longitude'])
+    print(singlelevel.columns.values.tolist())
+    print(singlelevel.index.names)
+   
+    # exit()
     # Calculating the sum of the last 6 hours of rainfall.
     singlelevel = singlelevel.sort_index()
     singlelevel['total_precipitation_6hr'] = singlelevel.groupby(level=[0, 1])['total_precipitation'].rolling(window = 6, min_periods = 1).sum().reset_index(level=[0, 1], drop=True)
     singlelevel.pop('total_precipitation')
     
-    '''client.retrieve(
-        'reanalysis-era5-pressure-levels',
-        {
-            'product_type': 'reanalysis',
-            'variable': pressurelevelfields,
-            'grid': '1.0/1.0',
-            'year': [2024],
-            'month': [1],
-            'day': [1],
-            'time': ['06:00', '12:00'],
-            'pressure_level': pressure_levels,
-            'format': 'netcdf'
-        },
-        'pressure-level.nc'
-    )'''
-    pressurelevel = xarray.open_dataset('pressure-level.nc', engine = scipy.__name__).to_dataframe()
+    # client.retrieve(
+    #     'reanalysis-era5-pressure-levels',
+    #     {
+    #         'product_type': ['reanalysis'],
+    #         'variable': pressurelevelfields,
+    #         'year': ['2024'],
+    #         'month': ['1'],
+    #         'day': ['1'],
+    #         'time': ['06:00', '12:00'],
+    #         'pressure_level': pressure_levels,
+    #         'data_format': 'netcdf',
+    #         'download_format': 'unarchived'
+    #     },
+    #     'pressure-level.nc'
+    # )
+    pressurelevel = xarray.open_dataset('pressure-level.nc').to_dataframe()
+    pressurelevel = pressurelevel.drop(columns=['number', 'expver'])
     pressurelevel = pressurelevel.rename(columns = {col:pressurelevelfields[ind] for ind, col in enumerate(pressurelevel.columns.values.tolist())})
-
+    print(pressurelevel.columns.values.tolist())
+    pressurelevel.index = pressurelevel.index.rename(['time', 'level', 'latitude', 'longitude'])
+    print(pressurelevel.index.names)
+    # exit(1)
     return singlelevel, pressurelevel
 
 # Adding sin and cos of the year progress.
@@ -247,7 +261,7 @@ def integrateProgress(data:pd.DataFrame):
         seconds_since_epoch = toDatetime(dt).timestamp()
         data = addYearProgress(seconds_since_epoch, data)
         data = addDayProgress(seconds_since_epoch, 'longitude' if 'longitude' in data.index.names else 'lon', data)
-
+    print('integrateProgress completed')
     return data
 
 def getSolarRadiation(longitude, latitude, dt):
@@ -293,7 +307,7 @@ def formatData(data:pd.DataFrame) -> pd.DataFrame:
     if 'batch' not in data.index.names:
         data['batch'] = 0
         data = data.set_index('batch', append = True)
-    
+    print('formatData completed')
     return data
 
 def getTargets(dt, data:pd.DataFrame):
@@ -301,7 +315,7 @@ def getTargets(dt, data:pd.DataFrame):
     lat, lon, levels, batch = sorted(data.index.get_level_values('lat').unique().tolist()), sorted(data.index.get_level_values('lon').unique().tolist()), sorted(data.index.get_level_values('level').unique().tolist()), data.index.get_level_values('batch').unique().tolist()
     time = [deltaTime(dt, hours = days * gap) for days in range(predictions_steps)]
     target = xarray.Dataset({field: (['lat', 'lon', 'level', 'time'], nans(len(lat), len(lon), len(levels), len(time))) for field in predictionFields}, coords = {'lat': lat, 'lon': lon, 'level': levels, 'time': time, 'batch': batch})
-
+    print('getTargets completed')
     return target.to_dataframe()
 
 def getForcings(data:pd.DataFrame):
@@ -310,7 +324,7 @@ def getForcings(data:pd.DataFrame):
     forcingdf = pd.DataFrame(index = forcingdf.index.drop_duplicates(keep = 'first'))
     forcingdf = integrateProgress(forcingdf)
     forcingdf = integrateSolarRadiation(forcingdf)
-
+    print('getForcings completed')
     return forcingdf
 
 if __name__ == '__main__':
